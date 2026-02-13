@@ -32,10 +32,14 @@ Environment variable overrides:
 ```bash
 btca connect
 btca disconnect
+btca wipe
 ```
 
 `btca connect` performs OAuth for `openai` and `github-copilot`, prompts for API keys when
 required, and falls back to `opencode auth --provider <provider>` for other providers.
+
+`btca wipe` is a destructive full reset that removes local BTCA config/data and OpenCode auth
+credentials for all providers (with a confirmation prompt unless `--yes` is passed).
 
 For `github-copilot`, btca uses device flow OAuth and opens a browser prompt to complete
 the sign-in.

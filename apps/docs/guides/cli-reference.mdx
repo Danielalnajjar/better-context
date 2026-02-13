@@ -146,6 +146,22 @@ Behavior: Prompts for setup type: MCP (remote) or CLI (local). The MCP path vali
 
 Clears all locally cloned resources.
 
+## `btca wipe`
+
+Permanently deletes all local BTCA state.
+
+Options:
+
+- `-y, --yes` skips the interactive confirmation prompt.
+
+Behavior:
+
+- Removes global BTCA config/data directories.
+- Removes local provider auth storage.
+- Scans your home directory for BTCA project configs and `.btca` data folders and deletes them.
+- Prints removed, skipped, and failed paths.
+- Refuses dangerous targets (for example root, home, or project-root ancestor paths).
+
 ## `btca serve`
 
 Starts the local server.

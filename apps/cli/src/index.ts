@@ -15,6 +15,7 @@ import { skillCommand } from './commands/skill.ts';
 import { telemetryCommand } from './commands/telemetry.ts';
 import { launchTui } from './commands/tui.ts';
 import { launchRepl } from './commands/repl.ts';
+import { wipeCommand } from './commands/wipe.ts';
 import { setTelemetryContext } from './lib/telemetry.ts';
 import packageJson from '../package.json';
 
@@ -56,6 +57,7 @@ program.addCommand(skillCommand);
 
 // Utility commands
 program.addCommand(clearCommand);
+program.addCommand(wipeCommand);
 program.addCommand(mcpCommand);
 program.addCommand(serveCommand);
 

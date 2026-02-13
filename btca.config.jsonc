@@ -133,6 +133,6 @@
       "branch": "main"
     }
   ],
-  "model": "gpt-5.3-codex-spark",
-  "provider": "openai"
+  "model": "claude-haiku-4-5",
+  "provider": "opencode"
 }
