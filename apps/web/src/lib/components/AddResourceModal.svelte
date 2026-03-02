@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { CheckCircle2, GitBranch, Link, Loader2, X } from '@lucide/svelte';
+	import {
+		CheckCircle2,
+		GitBranch,
+		Link,
+		Loader2,
+		Package as PackageIcon,
+		X
+	} from '@lucide/svelte';
 	import { useConvexClient } from 'convex-svelte';
 	import { api } from '../../convex/_generated/api';
 	import { getAuthState } from '$lib/stores/auth.svelte';
@@ -11,6 +18,8 @@
 
 	let { isOpen, onClose }: Props = $props();
 
+	type ResourceFormType = 'git' | 'npm';
+
 	type ParsedRepo = {
 		name: string;
 		url: string;
@@ -21,7 +30,10 @@
 	const auth = getAuthState();
 	const client = useConvexClient();
 
+	let resourceType = $state<ResourceFormType>('git');
 	let gitUrl = $state('');
+	let packageName = $state('');
+	let packageVersion = $state('');
 	let resourceName = $state('');
 	let branchName = $state('main');
 	let detectedRepo = $state<string | null>(null);
@@ -35,8 +47,11 @@
 		if (!isOpen) resetForm();
 	});
 
-	function resetForm() {
+	function resetForm(nextType: ResourceFormType = 'git') {
+		resourceType = nextType;
 		gitUrl = '';
+		packageName = '';
+		packageVersion = '';
 		resourceName = '';
 		branchName = 'main';
 		detectedRepo = null;
@@ -56,6 +71,10 @@
 		return repo
 			.replace(/[-_](.)/g, (_, c) => c.toUpperCase())
 			.replace(/^(.)/, (_, c) => c.toLowerCase());
+	}
+
+	function formatPackageResourceName(input: string) {
+		return input.trim().replace(/^@/, '').replace(/\s+/g, '');
 	}
 
 	function parseGitUrl(input: string): ParsedRepo | null {
@@ -139,6 +158,14 @@
 		branchTouched = true;
 	}
 
+	function handlePackageInput() {
+		parseError = null;
+		submitError = null;
+		if (!nameTouched) {
+			resourceName = formatPackageResourceName(packageName);
+		}
+	}
+
 	function handleKeydown(event: KeyboardEvent) {
 		if (!isOpen) return;
 		if (event.key === 'Escape') {
@@ -154,8 +181,8 @@
 			return;
 		}
 
-		const parsed = detectFromUrl({ showError: true });
-		if (!parsed) return;
+		const parsed = resourceType === 'git' ? detectFromUrl({ showError: true }) : null;
+		if (resourceType === 'git' && !parsed) return;
 
 		const name = resourceName.trim();
 		if (!name) {
@@ -163,12 +190,20 @@
 			return;
 		}
 
+		if (resourceType === 'npm' && !packageName.trim()) {
+			submitError = 'npm package is required.';
+			return;
+		}
+
 		isSubmitting = true;
 		try {
-			await client.mutation(api.resources.addCustomResource, {
+			await client.action(api.resourceActions.addCustomResource, {
+				type: resourceType,
 				name,
-				url: parsed.url,
-				branch: branchName.trim() || 'main'
+				url: resourceType === 'git' ? parsed?.url : undefined,
+				branch: resourceType === 'git' ? branchName.trim() || 'main' : undefined,
+				package: resourceType === 'npm' ? packageName.trim() : undefined,
+				version: resourceType === 'npm' ? packageVersion.trim() || undefined : undefined
 			});
 			closeModal();
 		} catch (error) {
@@ -178,8 +213,6 @@
 		}
 	}
 </script>
-
-<svelte:window onkeydown={handleKeydown} />
 
 {#if isOpen}
 	<div
@@ -206,51 +239,108 @@
 			aria-label="Add a resource"
 			tabindex="-1"
 			onclick={(event) => event.stopPropagation()}
-			onkeydown={(event) => {
-				event.stopPropagation();
-			}}
+			onkeydown={handleKeydown}
 		>
-			<div class="flex flex-wrap items-center justify-between gap-4">
-				<div class="flex items-center gap-3">
+			<div class="flex items-start justify-between gap-4">
+				<div class="flex min-w-0 flex-1 items-start gap-3">
 					<div class="bc-logoMark">
-						<Link size={18} />
+						{#if resourceType === 'git'}
+							<Link size={18} />
+						{:else}
+							<PackageIcon size={18} />
+						{/if}
 					</div>
-					<div>
+					<div class="min-w-0">
 						<h2 class="text-lg font-semibold">Add a resource</h2>
-						<p class="bc-muted text-sm">Connect a git repository so btca can index it.</p>
+						<p class="bc-muted text-sm">
+							{resourceType === 'git'
+								? 'Connect a git repository so btca can index it.'
+								: 'Attach an npm package so btca can use its published docs and metadata.'}
+						</p>
 					</div>
 				</div>
-				<button type="button" class="bc-chip p-2" onclick={closeModal} aria-label="Close">
+				<button type="button" class="bc-chip shrink-0 p-2" onclick={closeModal} aria-label="Close">
 					<X size={14} />
 				</button>
 			</div>
 
 			<div class="mt-6 grid gap-4">
-				<div>
-					<label for="git-url" class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]">
-						Git URL
-					</label>
-					<input
-						id="git-url"
-						type="url"
-						class="bc-input"
-						placeholder="https://github.com/owner/repo"
-						bind:value={gitUrl}
-						oninput={handleUrlInput}
-						onblur={handleUrlBlur}
-					/>
-					{#if parseError}
-						<p class="mt-2 text-xs text-red-500">{parseError}</p>
-					{/if}
-					{#if detectedRepo}
-						<div class="mt-2 flex items-center gap-2 text-xs">
-							<CheckCircle2 size={14} class="text-[hsl(var(--bc-success))]" />
-							<span class="bc-muted">
-								Detected {detectedRepo} · default branch {branchName}
-							</span>
+				<div class="grid gap-2 sm:grid-cols-2">
+					<button
+						type="button"
+						class="rounded-2xl border px-4 py-3 text-left transition-colors {resourceType === 'git'
+							? 'border-[hsl(var(--bc-accent))] bg-[hsl(var(--bc-surface-2))]'
+							: 'border-[hsl(var(--bc-border))] hover:bg-[hsl(var(--bc-surface-2))]'}"
+						onclick={() => resetForm('git')}
+					>
+						<div class="flex items-center gap-2">
+							<Link size={16} />
+							<span class="font-medium">Git Repository</span>
 						</div>
-					{/if}
+						<p class="bc-muted mt-1 text-xs">Repo URL and branch.</p>
+					</button>
+					<button
+						type="button"
+						class="rounded-2xl border px-4 py-3 text-left transition-colors {resourceType === 'npm'
+							? 'border-[hsl(var(--bc-accent))] bg-[hsl(var(--bc-surface-2))]'
+							: 'border-[hsl(var(--bc-border))] hover:bg-[hsl(var(--bc-surface-2))]'}"
+						onclick={() => resetForm('npm')}
+					>
+						<div class="flex items-center gap-2">
+							<PackageIcon size={16} />
+							<span class="font-medium">npm Package</span>
+						</div>
+						<p class="bc-muted mt-1 text-xs">Package name and optional version.</p>
+					</button>
 				</div>
+
+				{#if resourceType === 'git'}
+					<div>
+						<label
+							for="git-url"
+							class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]"
+						>
+							Git URL
+						</label>
+						<input
+							id="git-url"
+							type="url"
+							class="bc-input"
+							placeholder="https://github.com/owner/repo"
+							bind:value={gitUrl}
+							oninput={handleUrlInput}
+							onblur={handleUrlBlur}
+						/>
+						{#if parseError}
+							<p class="mt-2 text-xs text-red-500">{parseError}</p>
+						{/if}
+						{#if detectedRepo}
+							<div class="mt-2 flex items-center gap-2 text-xs">
+								<CheckCircle2 size={14} class="text-[hsl(var(--bc-success))]" />
+								<span class="bc-muted">
+									Detected {detectedRepo} · default branch {branchName}
+								</span>
+							</div>
+						{/if}
+					</div>
+				{:else}
+					<div>
+						<label
+							for="package-name"
+							class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]"
+						>
+							npm package
+						</label>
+						<input
+							id="package-name"
+							type="text"
+							class="bc-input"
+							placeholder="react or @types/node"
+							bind:value={packageName}
+							oninput={handlePackageInput}
+						/>
+					</div>
+				{/if}
 
 				<div class="grid gap-4 md:grid-cols-2">
 					<div>
@@ -264,34 +354,52 @@
 							id="resource-name"
 							type="text"
 							class="bc-input"
-							placeholder="e.g. svelteKit"
+							placeholder={resourceType === 'git' ? 'e.g. svelteKit' : 'e.g. types/node'}
 							bind:value={resourceName}
 							oninput={handleNameInput}
 						/>
 						<p class="bc-muted mt-2 text-xs">Use @mention: @{resourceName || 'resource'}</p>
 					</div>
-					<div>
-						<label
-							for="resource-branch"
-							class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]"
-						>
-							Branch
-						</label>
-						<div class="relative">
-							<GitBranch
-								size={14}
-								class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--bc-fg-muted))]"
-							/>
+					{#if resourceType === 'git'}
+						<div>
+							<label
+								for="resource-branch"
+								class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]"
+							>
+								Branch
+							</label>
+							<div class="relative">
+								<GitBranch
+									size={14}
+									class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--bc-fg-muted))]"
+								/>
+								<input
+									id="resource-branch"
+									type="text"
+									class="bc-input pl-9"
+									placeholder="main"
+									bind:value={branchName}
+									oninput={handleBranchInput}
+								/>
+							</div>
+						</div>
+					{:else}
+						<div>
+							<label
+								for="package-version"
+								class="mb-2 block text-xs font-semibold uppercase tracking-[0.2em]"
+							>
+								Version or tag
+							</label>
 							<input
-								id="resource-branch"
+								id="package-version"
 								type="text"
-								class="bc-input pl-9"
-								placeholder="main"
-								bind:value={branchName}
-								oninput={handleBranchInput}
+								class="bc-input"
+								placeholder="latest, 19.0.0, beta"
+								bind:value={packageVersion}
 							/>
 						</div>
-					</div>
+					{/if}
 				</div>
 
 				{#if submitError}
@@ -305,7 +413,7 @@
 
 			<div class="mt-6 flex flex-wrap items-center justify-between gap-3">
 				<p class="bc-muted text-xs">
-					We'll cache the repo on your instance after the next chat mention.
+					We'll sync this resource onto your instance after the next chat mention.
 				</p>
 				<div class="flex items-center gap-2">
 					<button type="button" class="bc-btn text-sm" onclick={closeModal} disabled={isSubmitting}>
@@ -315,13 +423,14 @@
 						type="button"
 						class="bc-btn bc-btn-primary text-sm"
 						onclick={handleSubmit}
-						disabled={isSubmitting || !gitUrl.trim()}
+						disabled={isSubmitting ||
+							(resourceType === 'git' ? !gitUrl.trim() : !packageName.trim())}
 					>
 						{#if isSubmitting}
 							<Loader2 size={16} class="animate-spin" />
 							Adding...
 						{:else}
-							Add resource
+							Add {resourceType === 'git' ? 'repository' : 'package'}
 						{/if}
 					</button>
 				</div>

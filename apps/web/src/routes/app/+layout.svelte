@@ -19,6 +19,8 @@
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import ProvisioningModal from '$lib/components/ProvisioningModal.svelte';
 	import CreateProjectModal from '$lib/components/CreateProjectModal.svelte';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import AddResourceModal from '$lib/components/AddResourceModal.svelte';
 
 	let { children } = $props();
 
@@ -46,6 +48,15 @@
 
 	let isInitializing = $state(true);
 	let sidebarOpen = $state(false);
+	let commandPaletteOpen = $state(false);
+	let addResourceModalOpen = $state(false);
+
+	function handleGlobalKeydown(event: KeyboardEvent) {
+		if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+			event.preventDefault();
+			commandPaletteOpen = !commandPaletteOpen;
+		}
+	}
 
 	const routeId = $derived((page.params as { id?: string }).id);
 	const currentThreadId = $derived(routeId && routeId !== 'new' ? routeId : null);
@@ -134,6 +145,8 @@
 	});
 </script>
 
+<svelte:window onkeydown={handleGlobalKeydown} />
+
 <svelte:head>
 	<title>btca | App</title>
 	<meta name="description" content="Web-based chat interface for btca" />
@@ -162,6 +175,7 @@
 				{currentThreadId}
 				isOpen={sidebarOpen}
 				isLoading={threadsLoading}
+				onOpenCommandPalette={() => (commandPaletteOpen = true)}
 				on:close={() => (sidebarOpen = false)}
 			/>
 		</aside>
@@ -189,3 +203,10 @@
 
 <ProvisioningModal />
 <CreateProjectModal {projectStore} />
+<CommandPalette
+	isOpen={commandPaletteOpen}
+	{threads}
+	onClose={() => (commandPaletteOpen = false)}
+	onOpenAddResource={() => (addResourceModalOpen = true)}
+/>
+<AddResourceModal isOpen={addResourceModalOpen} onClose={() => (addResourceModalOpen = false)} />
