@@ -170,14 +170,14 @@
 				sidebarOpen ? 'translate-x-0' : '-translate-x-full'
 			}`}
 		>
-		<Sidebar
-			{threads}
-			{currentThreadId}
-			isOpen={sidebarOpen}
-			isLoading={threadsLoading}
-			onOpenCommandPalette={() => (commandPaletteOpen = true)}
-			on:close={() => (sidebarOpen = false)}
-		/>
+			<Sidebar
+				{threads}
+				{currentThreadId}
+				isOpen={sidebarOpen}
+				isLoading={threadsLoading}
+				onOpenCommandPalette={() => (commandPaletteOpen = true)}
+				on:close={() => (sidebarOpen = false)}
+			/>
 		</aside>
 
 		{#if sidebarOpen}

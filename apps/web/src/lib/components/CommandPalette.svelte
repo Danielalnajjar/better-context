@@ -41,6 +41,7 @@
 	let { isOpen, threads, onClose, onOpenAddResource }: Props = $props();
 
 	const themeStore = getThemeStore();
+	const MAX_VISIBLE_THREADS = 3;
 
 	let searchQuery = $state('');
 	let selectedIndex = $state(0);
@@ -65,22 +66,24 @@
 
 		const threadItems: CommandItem[] = (() => {
 			const filtered = !query
-				? threads.slice(0, 6)
-				: threads.filter((t) => (t.title ?? t._id).toLowerCase().includes(query)).slice(0, 8);
-			return filtered.map((t) => ({
-				id: `thread-${t._id}`,
-				group: 'Threads',
-				label: t.title ?? `Thread ${t._id.slice(0, 8)}…`,
-				sublabel: new Date(t.lastActivityAt).toLocaleDateString(undefined, {
-					month: 'short',
-					day: 'numeric'
-				}),
-				icon: MessageSquare,
-				onSelect: () => {
-					goto(`/app/chat/${t._id}`);
-					onClose();
-				}
-			}));
+				? threads
+				: threads.filter((t) => (t.title ?? t._id).toLowerCase().includes(query));
+			return filtered
+				.map((t) => ({
+					id: `thread-${t._id}`,
+					group: 'Threads',
+					label: t.title ?? `Thread ${t._id.slice(0, 8)}…`,
+					sublabel: new Date(t.lastActivityAt).toLocaleDateString(undefined, {
+						month: 'short',
+						day: 'numeric'
+					}),
+					icon: MessageSquare,
+					onSelect: () => {
+						goto(`/app/chat/${t._id}`);
+						onClose();
+					}
+				}))
+				.slice(0, MAX_VISIBLE_THREADS);
 		})();
 
 		const actionItems: CommandItem[] = [
@@ -162,8 +165,7 @@
 		const filteredNonThread = query
 			? [...actionItems, ...navItems].filter(
 					(item) =>
-						item.label.toLowerCase().includes(query) ||
-						item.group.toLowerCase().includes(query)
+						item.label.toLowerCase().includes(query) || item.group.toLowerCase().includes(query)
 				)
 			: [...actionItems, ...navItems];
 
@@ -198,6 +200,7 @@
 			onClose();
 			return;
 		}
+		if (allItems.length === 0) return;
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
 			selectedIndex = Math.min(selectedIndex + 1, allItems.length - 1);
@@ -216,8 +219,6 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 {#if isOpen}
 	<div
 		class="fixed inset-0 z-50 flex items-start justify-center bg-[hsl(var(--bc-bg))]/80 px-4 pt-[14vh] backdrop-blur-sm"
@@ -232,7 +233,7 @@
 			aria-label="Command palette"
 			tabindex="-1"
 			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => e.stopPropagation()}
+			onkeydown={handleKeydown}
 		>
 			<div class="flex items-center gap-3 border-b border-[hsl(var(--bc-border))] px-4 py-3">
 				<Search size={15} class="shrink-0 text-[hsl(var(--bc-fg-muted))]" />
@@ -309,7 +310,8 @@
 				<span class="flex items-center gap-1.5">
 					<kbd
 						class="inline-flex items-center border border-[hsl(var(--bc-border))] px-1 py-0.5 font-sans text-[9px]"
-					>↑↓</kbd>
+						>↑↓</kbd
+					>
 					navigate
 				</span>
 				<span class="flex items-center gap-1.5">
@@ -323,7 +325,8 @@
 				<span class="flex items-center gap-1.5">
 					<kbd
 						class="inline-flex items-center border border-[hsl(var(--bc-border))] px-1 py-0.5 font-sans text-[9px]"
-					>Esc</kbd>
+						>Esc</kbd
+					>
 					close
 				</span>
 			</div>

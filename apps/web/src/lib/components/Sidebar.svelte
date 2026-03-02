@@ -43,8 +43,13 @@
 		onOpenCommandPalette: () => void;
 	}
 
-	let { threads, currentThreadId, isOpen, isLoading = false, onOpenCommandPalette }: Props =
-		$props();
+	let {
+		threads,
+		currentThreadId,
+		isOpen,
+		isLoading = false,
+		onOpenCommandPalette
+	}: Props = $props();
 
 	const dispatch = createEventDispatcher<{ close: void }>();
 	const auth = getAuthState();
@@ -271,7 +276,8 @@
 			</span>
 			<kbd
 				class="shrink-0 border border-[hsl(var(--bc-border))] px-1 py-0.5 font-sans text-[9px] text-[hsl(var(--bc-fg-muted))]"
-			>⌘K</kbd>
+				>⌘K</kbd
+			>
 		</button>
 	</div>
 
