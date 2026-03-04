@@ -36,56 +36,115 @@ export type CollectionsService = {
 	}) => Promise<CollectionResult>;
 };
 
-const encodePathSegments = (value: string) => value.split('/').map(encodeURIComponent).join('/');
+const escapeXml = (value: string) =>
+	value
+		.replaceAll('&', '&amp;')
+		.replaceAll('<', '&lt;')
+		.replaceAll('>', '&gt;')
+		.replaceAll('"', '&quot;')
+		.replaceAll("'", '&apos;');
+
+const getResourceTypeLabel = (resource: BtcaFsResource) => {
+	if (resource.type === 'git') return 'git repo';
+	if (resource.type === 'npm') return 'npm package';
+	return 'local directory';
+};
 
 const trimGitSuffix = (url: string) => url.replace(/\.git$/u, '').replace(/\/+$/u, '');
+
+const encodePathSegments = (value: string) => value.split('/').map(encodeURIComponent).join('/');
+
+const xmlLine = (tag: string, value?: string) =>
+	value ? `\t\t<${tag}>${escapeXml(value)}</${tag}>` : '';
+
+const xmlPathBlock = (tag: string, values: readonly string[], prefix = '') =>
+	values.length === 0
+		? ''
+		: [
+				`\t\t<${tag}>`,
+				...values.map((value) => `\t\t\t<path>${escapeXml(`${prefix}${value}`)}</path>`),
+				`\t\t</${tag}>`
+			].join('\n');
+
 const getNpmCitationAlias = (metadata?: VirtualResourceMetadata) => {
 	if (!metadata?.package) return undefined;
 	return `npm:${metadata.package}@${metadata.version ?? 'latest'}`;
 };
 
+const getNpmFileUrlPrefix = (metadata?: VirtualResourceMetadata) => {
+	if (!metadata?.package || !metadata?.version) return undefined;
+	return `https://unpkg.com/${metadata.package}@${metadata.version}`;
+};
+
 const createCollectionInstructionBlock = (
 	resource: BtcaFsResource,
 	metadata?: VirtualResourceMetadata
-): string => {
-	const focusLines = resource.repoSubPaths.map(
-		(subPath) => `Focus: ./${resource.fsName}/${subPath}`
-	);
+) => {
 	const gitRef = metadata?.branch ?? metadata?.commit;
-	const githubPrefix =
+	const githubBlobPrefix =
 		resource.type === 'git' && metadata?.url && gitRef
 			? `${trimGitSuffix(metadata.url)}/blob/${encodeURIComponent(gitRef)}`
 			: undefined;
 	const npmCitationAlias = resource.type === 'npm' ? getNpmCitationAlias(metadata) : undefined;
-	const lines = [
-		`## Resource: ${resource.name}`,
-		FS_RESOURCE_SYSTEM_NOTE,
-		`Path: ./${resource.fsName}`,
-		resource.type === 'git' && metadata?.url ? `Repo URL: ${trimGitSuffix(metadata.url)}` : '',
-		resource.type === 'git' && metadata?.branch ? `Repo Branch: ${metadata.branch}` : '',
-		resource.type === 'git' && metadata?.commit ? `Repo Commit: ${metadata.commit}` : '',
-		resource.type === 'npm' && metadata?.package ? `NPM Package: ${metadata.package}` : '',
-		resource.type === 'npm' && metadata?.version ? `NPM Version: ${metadata.version}` : '',
-		resource.type === 'npm' && metadata?.url ? `NPM URL: ${metadata.url}` : '',
-		npmCitationAlias ? `NPM Citation Alias: ${npmCitationAlias}` : '',
-		githubPrefix ? `GitHub Blob Prefix: ${githubPrefix}` : '',
-		githubPrefix
-			? `GitHub Citation Rule: Convert virtual paths under ./${resource.fsName}/ to repo-relative paths, then encode each path segment for GitHub URLs (example segment: "+page.server.js" -> "${encodeURIComponent('+page.server.js')}").`
-			: '',
-		githubPrefix
-			? `GitHub Citation Example: ${githubPrefix}/${encodePathSegments('src/routes/blog/+page.server.js')}`
-			: '',
-		resource.type !== 'git'
-			? 'Citation Rule: Cite local file paths only for this resource (no GitHub URL).'
-			: '',
-		npmCitationAlias
-			? `NPM Citation Rule: In "Sources", cite npm files using "${npmCitationAlias}/<file>" (for example, "${npmCitationAlias}/README.md"). Do not cite encoded virtual folder names.`
-			: '',
-		...focusLines,
-		resource.specialAgentInstructions ? `Notes: ${resource.specialAgentInstructions}` : ''
-	].filter(Boolean);
 
-	return lines.join('\n');
+	return [
+		'\t<resource>',
+		`\t\t<name>${escapeXml(resource.name)}</name>`,
+		`\t\t<type>${getResourceTypeLabel(resource)}</type>`,
+		`\t\t<system_note>${escapeXml(FS_RESOURCE_SYSTEM_NOTE)}</system_note>`,
+		`\t\t<path>${escapeXml(`./${resource.fsName}`)}</path>`,
+		xmlLine(
+			'repo_url',
+			resource.type === 'git' ? metadata?.url && trimGitSuffix(metadata.url) : undefined
+		),
+		xmlLine('repo_branch', resource.type === 'git' ? metadata?.branch : undefined),
+		xmlLine('repo_commit', resource.type === 'git' ? metadata?.commit : undefined),
+		xmlLine('npm_package', resource.type === 'npm' ? metadata?.package : undefined),
+		xmlLine('npm_version', resource.type === 'npm' ? metadata?.version : undefined),
+		xmlLine('npm_url', resource.type === 'npm' ? metadata?.url : undefined),
+		xmlLine('npm_citation_alias', npmCitationAlias),
+		xmlLine(
+			'npm_file_url_prefix',
+			resource.type === 'npm' ? getNpmFileUrlPrefix(metadata) : undefined
+		),
+		xmlLine('github_blob_prefix', githubBlobPrefix),
+		xmlLine(
+			'citation_rule',
+			githubBlobPrefix
+				? `Convert virtual paths under ./${resource.fsName}/ to repo-relative paths, then encode each path segment for GitHub URLs.`
+				: resource.type === 'npm' && npmCitationAlias
+					? `In Sources, cite npm files using ${npmCitationAlias}/<file> and link them to ${getNpmFileUrlPrefix(metadata) ?? 'the exact file URL prefix'}/<file>. Do not cite encoded virtual folder names.`
+					: 'Cite local file paths only for this resource.'
+		),
+		xmlLine(
+			'citation_example',
+			githubBlobPrefix
+				? `${githubBlobPrefix}/${encodePathSegments('src/routes/blog/+page.server.js')}`
+				: resource.type === 'npm' && npmCitationAlias && getNpmFileUrlPrefix(metadata)
+					? `${getNpmFileUrlPrefix(metadata)}/package.json`
+					: undefined
+		),
+		xmlPathBlock('focus_paths', resource.repoSubPaths, `./${resource.fsName}/`),
+		`\t\t<special_notes>${escapeXml(resource.specialAgentInstructions)}</special_notes>`,
+		'\t</resource>'
+	]
+		.filter(Boolean)
+		.join('\n');
+};
+
+const createCollectionInstructions = (
+	resources: readonly BtcaFsResource[],
+	metadataResources: readonly VirtualResourceMetadata[]
+) => {
+	const metadataByName = new Map(metadataResources.map((resource) => [resource.name, resource]));
+
+	return [
+		'<available_resources>',
+		...resources.map((resource) =>
+			createCollectionInstructionBlock(resource, metadataByName.get(resource.name))
+		),
+		'</available_resources>'
+	].join('\n');
 };
 
 const ignoreErrors = async (action: () => Promise<unknown>) => {
@@ -400,16 +459,9 @@ export const createCollectionsService = (args: {
 					resources: metadataResources
 				});
 
-				const metadataByName = new Map(
-					metadataResources.map((resource) => [resource.name, resource])
-				);
-				const instructionBlocks = loadedResources.map((resource) =>
-					createCollectionInstructionBlock(resource, metadataByName.get(resource.name))
-				);
-
 				return {
 					path: collectionPath,
-					agentInstructions: instructionBlocks.join('\n\n'),
+					agentInstructions: createCollectionInstructions(loadedResources, metadataResources),
 					vfsId,
 					cleanup: async () => {
 						await cleanupResources(loadedResources);
