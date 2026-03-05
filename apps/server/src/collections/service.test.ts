@@ -4,31 +4,45 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { ConfigService } from '../config/index.ts';
+import type { ResourceDefinition } from '../resources/schema.ts';
 import type { ResourcesService } from '../resources/service.ts';
+import type { BtcaFsResource } from '../resources/types.ts';
 import { createCollectionsService } from './service.ts';
 import { disposeVirtualFs, existsInVirtualFs } from '../vfs/virtual-fs.ts';
 
-const createLocalResource = (name: string, resourcePath: string) => ({
+const createFsResource = ({
+	name,
+	resourcePath,
+	type = 'local',
+	repoSubPaths = [],
+	specialAgentInstructions = ''
+}: {
+	name: string;
+	resourcePath: string;
+	type?: BtcaFsResource['type'];
+	repoSubPaths?: readonly string[];
+	specialAgentInstructions?: string;
+}) => ({
 	_tag: 'fs-based' as const,
 	name,
 	fsName: name,
-	type: 'local' as const,
-	repoSubPaths: [],
-	specialAgentInstructions: '',
+	type,
+	repoSubPaths,
+	specialAgentInstructions,
 	getAbsoluteDirectoryPath: async () => resourcePath
 });
 
-const createConfigMock = () =>
+const createConfigMock = (definitions: Record<string, ResourceDefinition> = {}) =>
 	({
-		getResource: () => undefined
+		getResource: (name: string) => definitions[name]
 	}) as unknown as ConfigService;
 
-const createResourcesMock = (resourcePath: string) =>
+const createResourcesMock = (loadPromise: ResourcesService['loadPromise']) =>
 	({
 		load: () => {
 			throw new Error('Not implemented in test');
 		},
-		loadPromise: async () => createLocalResource('repo', resourcePath)
+		loadPromise
 	}) as unknown as ResourcesService;
 
 const runGit = (cwd: string, args: string[]) => {
@@ -55,7 +69,7 @@ describe('createCollectionsService', () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-git-'));
 		const collections = createCollectionsService({
 			config: createConfigMock(),
-			resources: createResourcesMock(resourcePath)
+			resources: createResourcesMock(async () => createFsResource({ name: 'repo', resourcePath }))
 		});
 
 		try {
@@ -89,7 +103,7 @@ describe('createCollectionsService', () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-local-'));
 		const collections = createCollectionsService({
 			config: createConfigMock(),
-			resources: createResourcesMock(resourcePath)
+			resources: createResourcesMock(async () => createFsResource({ name: 'repo', resourcePath }))
 		});
 
 		try {
@@ -109,6 +123,129 @@ describe('createCollectionsService', () => {
 					false
 				);
 				expect(await existsInVirtualFs('/repo/dist/bundle.js', collection.vfsId)).toBe(false);
+				expect(collection.agentInstructions).not.toContain('<special_notes>');
+			} finally {
+				await cleanupCollection(collection);
+			}
+		} finally {
+			await fs.rm(resourcePath, { recursive: true, force: true });
+		}
+	});
+
+	it('includes git citation metadata in agent instructions', async () => {
+		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-git-meta-'));
+		const collections = createCollectionsService({
+			config: createConfigMock({
+				docs: {
+					type: 'git',
+					name: 'docs',
+					url: 'https://github.com/example/repo.git',
+					branch: 'main',
+					searchPath: 'guides',
+					specialNotes: 'Prefer the guides folder.'
+				}
+			}),
+			resources: createResourcesMock(async () =>
+				createFsResource({
+					name: 'docs',
+					resourcePath,
+					type: 'git',
+					repoSubPaths: ['guides'],
+					specialAgentInstructions: 'Prefer the guides folder.'
+				})
+			)
+		});
+
+		try {
+			await fs.writeFile(path.join(resourcePath, 'README.md'), 'hello\n');
+			runGit(resourcePath, ['init', '-q']);
+			runGit(resourcePath, ['config', 'user.email', 'test@example.com']);
+			runGit(resourcePath, ['config', 'user.name', 'BTCA Test']);
+			runGit(resourcePath, ['add', 'README.md']);
+			runGit(resourcePath, ['commit', '-m', 'init']);
+
+			const collection = await collections.loadPromise({ resourceNames: ['docs'] });
+
+			try {
+				expect(collection.agentInstructions).toContain(
+					'<repo_url>https://github.com/example/repo</repo_url>'
+				);
+				expect(collection.agentInstructions).toContain('<repo_branch>main</repo_branch>');
+				expect(collection.agentInstructions).toContain(
+					'<github_blob_prefix>https://github.com/example/repo/blob/main</github_blob_prefix>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<citation_rule>Convert virtual paths under ./docs/ to repo-relative paths, then encode each path segment for GitHub URLs.</citation_rule>'
+				);
+				expect(collection.agentInstructions).toContain('<path>./docs/guides</path>');
+				expect(collection.agentInstructions).toContain('<repo_commit>');
+				expect(collection.agentInstructions).toContain(
+					'<special_notes>Prefer the guides folder.</special_notes>'
+				);
+			} finally {
+				await cleanupCollection(collection);
+			}
+		} finally {
+			await fs.rm(resourcePath, { recursive: true, force: true });
+		}
+	});
+
+	it('includes npm citation metadata in agent instructions', async () => {
+		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-npm-meta-'));
+		const collections = createCollectionsService({
+			config: createConfigMock({
+				react: {
+					type: 'npm',
+					name: 'react',
+					package: 'react',
+					version: '19.0.0',
+					specialNotes: 'Use package docs.'
+				}
+			}),
+			resources: createResourcesMock(async () =>
+				createFsResource({
+					name: 'react',
+					resourcePath,
+					type: 'npm',
+					specialAgentInstructions: 'Use package docs.'
+				})
+			)
+		});
+
+		try {
+			await fs.writeFile(
+				path.join(resourcePath, '.btca-npm-meta.json'),
+				JSON.stringify({
+					packageName: 'react',
+					resolvedVersion: '19.0.0',
+					packageUrl: 'https://www.npmjs.com/package/react'
+				})
+			);
+			await fs.writeFile(path.join(resourcePath, 'README.md'), 'react docs\n');
+
+			const collection = await collections.loadPromise({ resourceNames: ['react'] });
+
+			try {
+				expect(collection.agentInstructions).toContain('<npm_package>react</npm_package>');
+				expect(collection.agentInstructions).toContain('<npm_version>19.0.0</npm_version>');
+				expect(collection.agentInstructions).toContain(
+					'<npm_url>https://www.npmjs.com/package/react</npm_url>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<npm_citation_alias>npm:react@19.0.0</npm_citation_alias>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<npm_file_url_prefix>https://unpkg.com/react@19.0.0</npm_file_url_prefix>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<citation_rule>In Sources, cite npm files using npm:react@19.0.0/&lt;file&gt; and link them to https://unpkg.com/react@19.0.0/&lt;file&gt;. Do not cite encoded virtual folder names.</citation_rule>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<citation_example>https://unpkg.com/react@19.0.0/package.json</citation_example>'
+				);
+				expect(collection.agentInstructions).toContain(
+					'<special_notes>Use package docs.</special_notes>'
+				);
 			} finally {
 				await cleanupCollection(collection);
 			}
