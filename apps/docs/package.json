@@ -2,9 +2,9 @@
 	"name": "@btca/docs",
 	"private": true,
 	"scripts": {
-		"dev": "mint dev",
+		"dev": "bunx mint dev",
 		"format": "prettier --write .",
-		"check": "mint validate --disable-openapi && mint openapi-check api-reference/openapi.local.json && mint openapi-check api-reference/openapi.cloud.json"
+		"check": "bunx mint validate --disable-openapi && bunx mint openapi-check api-reference/openapi.local.json && bunx mint openapi-check api-reference/openapi.cloud.json"
 	},
 	"dependencies": {},
 	"devDependencies": {
