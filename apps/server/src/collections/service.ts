@@ -2,20 +2,15 @@ import path from 'node:path';
 
 import { Effect } from 'effect';
 
-import type { ConfigService as ConfigServiceShape } from '../config/index.ts';
 import { runTransaction } from '../context/transaction.ts';
 import { CommonHints, getErrorHint, getErrorMessage } from '../errors.ts';
 import { metricsInfo } from '../metrics/index.ts';
 import type { ResourcesService } from '../resources/service.ts';
-import { isGitResource, isNpmResource } from '../resources/schema.ts';
 import { FS_RESOURCE_SYSTEM_NOTE, type BtcaFsResource } from '../resources/types.ts';
-import { parseNpmReference } from '../validation/index.ts';
 import { CollectionError, getCollectionKey, type CollectionResult } from './types.ts';
 import {
 	createVirtualFs,
 	disposeVirtualFs,
-	importDirectoryIntoVirtualFs,
-	importPathsIntoVirtualFs,
 	mkdirVirtualFs,
 	rmVirtualFs
 } from '../vfs/virtual-fs.ts';
@@ -150,53 +145,6 @@ const ignoreErrors = async (action: () => Promise<unknown>) => {
 	}
 };
 
-const LOCAL_RESOURCE_IGNORED_DIRECTORIES = new Set([
-	'.git',
-	'.turbo',
-	'.next',
-	'.svelte-kit',
-	'.vercel',
-	'.cache',
-	'coverage',
-	'dist',
-	'build',
-	'out',
-	'node_modules'
-]);
-
-const normalizeRelativePath = (value: string) => value.split(path.sep).join('/');
-
-const shouldIgnoreImportedPath = (resource: BtcaFsResource, relativePath: string) => {
-	const normalized = normalizeRelativePath(relativePath);
-	if (!normalized || normalized === '.') return false;
-	const segments = normalized.split('/');
-	if (segments.includes('.git')) return true;
-	if (resource.type !== 'local') return false;
-	return segments.some((segment) => LOCAL_RESOURCE_IGNORED_DIRECTORIES.has(segment));
-};
-
-const listGitVisiblePaths = async (resourcePath: string) => {
-	try {
-		const proc = Bun.spawn(
-			['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-			{
-				cwd: resourcePath,
-				stdout: 'pipe',
-				stderr: 'ignore'
-			}
-		);
-		const stdout = await new Response(proc.stdout).text();
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) return null;
-		return stdout
-			.split('\0')
-			.map((entry) => entry.trim())
-			.filter((entry) => entry.length > 0);
-	} catch {
-		return null;
-	}
-};
-
 const initVirtualRoot = async (collectionPath: string, vfsId: string) => {
 	try {
 		await mkdirVirtualFs(collectionPath, { recursive: true }, vfsId);
@@ -214,173 +162,39 @@ const loadResource = async (resources: ResourcesService, name: string, quiet: bo
 		return await resources.loadPromise(name, { quiet });
 	} catch (cause) {
 		const underlyingHint = getErrorHint(cause);
-		const underlyingMessage = getErrorMessage(cause);
 		throw new CollectionError({
-			message: `Failed to load resource "${name}": ${underlyingMessage}`,
+			message: `Failed to load resource "${name}"`,
 			hint:
 				underlyingHint ??
 				`${CommonHints.CLEAR_CACHE} Check that the resource "${name}" is correctly configured.`,
-			cause
+			cause,
+			code: 'RESOURCE_LOAD_FAILED',
+			resourceName: name
 		});
 	}
 };
 
-const resolveResourcePath = async (resource: BtcaFsResource) => {
+const materializeResource = async (
+	resource: BtcaFsResource,
+	args: { destinationPath: string; vfsId: string }
+) => {
 	try {
-		return await resource.getAbsoluteDirectoryPath();
+		return await resource.materializeIntoVirtualFs(args);
 	} catch (cause) {
+		const underlyingHint = getErrorHint(cause);
 		throw new CollectionError({
-			message: `Failed to get path for resource "${resource.name}"`,
-			hint: CommonHints.CLEAR_CACHE,
-			cause
+			message: `Failed to materialize resource "${resource.name}"`,
+			hint:
+				underlyingHint ??
+				`${CommonHints.CLEAR_CACHE} Check that the resource "${resource.name}" is correctly configured.`,
+			cause,
+			code: 'RESOURCE_MATERIALIZE_FAILED',
+			resourceName: resource.name
 		});
 	}
-};
-
-const virtualizeResource = async (args: {
-	resource: BtcaFsResource;
-	resourcePath: string;
-	virtualResourcePath: string;
-	vfsId: string;
-}) => {
-	try {
-		if (args.resource.type === 'local') {
-			const gitVisiblePaths = await listGitVisiblePaths(args.resourcePath);
-			if (gitVisiblePaths) {
-				await importPathsIntoVirtualFs({
-					sourcePath: args.resourcePath,
-					destinationPath: args.virtualResourcePath,
-					relativePaths: gitVisiblePaths,
-					vfsId: args.vfsId
-				});
-				return;
-			}
-		}
-
-		await importDirectoryIntoVirtualFs({
-			sourcePath: args.resourcePath,
-			destinationPath: args.virtualResourcePath,
-			vfsId: args.vfsId,
-			ignore: (relativePath) => shouldIgnoreImportedPath(args.resource, relativePath)
-		});
-	} catch (cause) {
-		throw new CollectionError({
-			message: `Failed to virtualize resource "${args.resource.name}"`,
-			hint: CommonHints.CLEAR_CACHE,
-			cause
-		});
-	}
-};
-
-const getGitHeadHash = async (resourcePath: string) => {
-	try {
-		const proc = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
-			cwd: resourcePath,
-			stdout: 'pipe',
-			stderr: 'pipe'
-		});
-		const stdout = await new Response(proc.stdout).text();
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) return undefined;
-		const trimmed = stdout.trim();
-		return trimmed.length > 0 ? trimmed : undefined;
-	} catch {
-		return undefined;
-	}
-};
-
-const getGitHeadBranch = async (resourcePath: string) => {
-	try {
-		const proc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
-			cwd: resourcePath,
-			stdout: 'pipe',
-			stderr: 'pipe'
-		});
-		const stdout = await new Response(proc.stdout).text();
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) return undefined;
-		const trimmed = stdout.trim();
-		if (!trimmed || trimmed === 'HEAD') return undefined;
-		return trimmed;
-	} catch {
-		return undefined;
-	}
-};
-
-const ANON_PREFIX = 'anonymous:';
-const getAnonymousUrlFromName = (name: string) =>
-	name.startsWith(ANON_PREFIX) ? name.slice(ANON_PREFIX.length) : undefined;
-const NPM_ANON_PREFIX = `${ANON_PREFIX}npm:`;
-const NPM_META_FILE = '.btca-npm-meta.json';
-const getAnonymousNpmReferenceFromName = (name: string) =>
-	name.startsWith(NPM_ANON_PREFIX) ? name.slice(ANON_PREFIX.length) : undefined;
-
-const readNpmMeta = async (resourcePath: string) => {
-	try {
-		const content = await Bun.file(path.join(resourcePath, NPM_META_FILE)).text();
-		return JSON.parse(content) as {
-			packageName?: string;
-			resolvedVersion?: string;
-			packageUrl?: string;
-		};
-	} catch {
-		return null;
-	}
-};
-
-const buildVirtualMetadata = async (args: {
-	resource: BtcaFsResource;
-	resourcePath: string;
-	loadedAt: string;
-	definition?: ReturnType<ConfigServiceShape['getResource']>;
-}) => {
-	const base = {
-		name: args.resource.name,
-		fsName: args.resource.fsName,
-		type: args.resource.type,
-		path: args.resourcePath,
-		repoSubPaths: args.resource.repoSubPaths,
-		loadedAt: args.loadedAt
-	};
-
-	if (args.resource.type === 'npm') {
-		const configuredDefinition =
-			args.definition && isNpmResource(args.definition) ? args.definition : null;
-		const anonymousReference = getAnonymousNpmReferenceFromName(args.resource.name);
-		const anonymousNpm = anonymousReference ? parseNpmReference(anonymousReference) : null;
-		const cached = await readNpmMeta(args.resourcePath);
-		const packageName =
-			configuredDefinition?.package ?? cached?.packageName ?? anonymousNpm?.packageName;
-		const version =
-			configuredDefinition?.version ?? cached?.resolvedVersion ?? anonymousNpm?.version;
-		const url = cached?.packageUrl ?? anonymousNpm?.packageUrl;
-
-		return {
-			...base,
-			...(packageName ? { package: packageName } : {}),
-			...(version ? { version } : {}),
-			...(url ? { url } : {})
-		};
-	}
-
-	if (args.resource.type !== 'git') return base;
-
-	const configuredDefinition =
-		args.definition && isGitResource(args.definition) ? args.definition : null;
-	const url = configuredDefinition?.url ?? getAnonymousUrlFromName(args.resource.name);
-	const branch = configuredDefinition?.branch ?? (await getGitHeadBranch(args.resourcePath));
-	const commit = await getGitHeadHash(args.resourcePath);
-
-	return {
-		...base,
-		...(url ? { url } : {}),
-		...(branch ? { branch } : {}),
-		...(commit ? { commit } : {})
-	};
 };
 
 export const createCollectionsService = (args: {
-	config: ConfigServiceShape;
 	resources: ResourcesService;
 }): CollectionsService => {
 	const loadPromise: CollectionsService['loadPromise'] = ({ resourceNames, quiet = false }) =>
@@ -423,28 +237,25 @@ export const createCollectionsService = (args: {
 				const metadataResources: VirtualResourceMetadata[] = [];
 				const loadedAt = new Date().toISOString();
 				for (const resource of loadedResources) {
-					const resourcePath = await resolveResourcePath(resource);
 					const virtualResourcePath = path.posix.join('/', resource.fsName);
 
 					await ignoreErrors(() =>
 						rmVirtualFs(virtualResourcePath, { recursive: true, force: true }, vfsId)
 					);
 
-					await virtualizeResource({
-						resource,
-						resourcePath,
-						virtualResourcePath,
+					const result = await materializeResource(resource, {
+						destinationPath: virtualResourcePath,
 						vfsId
 					});
 
-					const definition = args.config.getResource(resource.name);
-					const metadata = await buildVirtualMetadata({
-						resource,
-						resourcePath,
+					metadataResources.push({
+						name: resource.name,
+						fsName: resource.fsName,
+						type: resource.type,
+						repoSubPaths: resource.repoSubPaths,
 						loadedAt,
-						definition
+						...result.metadata
 					});
-					if (metadata) metadataResources.push(metadata);
 				}
 
 				setVirtualCollectionMetadata({

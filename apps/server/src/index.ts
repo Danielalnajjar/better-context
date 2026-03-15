@@ -419,7 +419,7 @@ const createApp = () => {
 			'/clear',
 			withHttpErrorHandling(
 				Effect.gen(function* () {
-					const result = yield* ServerServices.clearConfigResources;
+					const result = yield* ServerServices.clearResourceCaches;
 					return HttpServerResponse.jsonUnsafe(result);
 				})
 			)
@@ -460,9 +460,9 @@ export const startServer = async (options: StartServerOptions = {}): Promise<Ser
 	});
 
 	const resources = createResourcesService(config);
-	const collections = createCollectionsService({ config, resources });
+	const collections = createCollectionsService({ resources });
 	const agent = createAgentService(config);
-	const runtime = createServerRuntime({ config, collections, agent });
+	const runtime = createServerRuntime({ config, collections, agent, resources });
 	const appLayer = createApp();
 	const { handler, dispose } = HttpRouter.toWebHandler(appLayer, {
 		disableLogger: options.quiet === true

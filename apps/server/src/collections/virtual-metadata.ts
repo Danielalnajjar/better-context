@@ -2,7 +2,6 @@ export type VirtualResourceMetadata = {
 	name: string;
 	fsName: string;
 	type: 'git' | 'local' | 'npm';
-	path: string;
 	repoSubPaths: readonly string[];
 	url?: string;
 	branch?: string;

@@ -3,6 +3,7 @@ import type { AgentService as AgentServiceShape } from '../agent/service.ts';
 import type { CollectionsService as CollectionsServiceShape } from '../collections/service.ts';
 import { getCollectionKey } from '../collections/types.ts';
 import type { ConfigService as ConfigServiceShape } from '../config/index.ts';
+import type { ResourcesService as ResourcesServiceShape } from '../resources/service.ts';
 import type { ResourceDefinition } from '../resources/schema.ts';
 
 export class ConfigService extends ServiceMap.Service<ConfigService, ConfigServiceShape>()(
@@ -18,9 +19,14 @@ export class AgentService extends ServiceMap.Service<AgentService, AgentServiceS
 	'btca-server/effect/AgentService'
 ) {}
 
+export class ResourcesService extends ServiceMap.Service<ResourcesService, ResourcesServiceShape>()(
+	'btca-server/effect/ResourcesService'
+) {}
+
 const configService = Effect.service(ConfigService);
 const collectionsService = Effect.service(CollectionsService);
 const agentService = Effect.service(AgentService);
+const resourcesService = Effect.service(ResourcesService);
 
 export type ConfigSnapshot = {
 	provider: string;
@@ -138,8 +144,8 @@ export const addConfigResource = (
 export const removeConfigResource = (name: string): Effect.Effect<void, unknown, ConfigService> =>
 	Effect.flatMap(configService, (config) => config.removeResource(name));
 
-export const clearConfigResources = Effect.flatMap(configService, (config) =>
-	config.clearResources()
+export const clearResourceCaches = Effect.flatMap(resourcesService, (resources) =>
+	resources.clearCaches()
 );
 
 export const loadedResourceCollectionKey = (resourceNames: readonly string[]) =>

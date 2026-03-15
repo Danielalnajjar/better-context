@@ -144,7 +144,6 @@ export type ConfigService = {
 	) => Effect.Effect<{ provider: string; model: string; savedTo: ConfigScope }, unknown>;
 	addResource: (resource: ResourceDefinition) => Effect.Effect<ResourceDefinition, unknown>;
 	removeResource: (name: string) => Effect.Effect<void, unknown>;
-	clearResources: () => Effect.Effect<{ cleared: number }, unknown>;
 	reload: () => Effect.Effect<void, unknown>;
 };
 
@@ -612,29 +611,6 @@ const makeService = (
 		}
 	};
 
-	const clearResourcesPromise = async (): Promise<{ cleared: number }> => {
-		let clearedCount = 0;
-
-		let resourcesDir: string[] = [];
-		try {
-			resourcesDir = await fs.readdir(resourcesDirectory);
-		} catch {
-			resourcesDir = [];
-		}
-
-		for (const item of resourcesDir) {
-			try {
-				await fs.rm(`${resourcesDirectory}/${item}`, { recursive: true, force: true });
-				clearedCount++;
-			} catch {
-				break;
-			}
-		}
-
-		metricsInfo('config.resources.cleared', { count: clearedCount });
-		return { cleared: clearedCount };
-	};
-
 	const reloadPromise = async (): Promise<void> => {
 		metricsInfo('config.reload.start', { configPath });
 
@@ -692,11 +668,6 @@ const makeService = (
 		removeResource: (name) =>
 			Effect.tryPromise({
 				try: () => removeResourcePromise(name),
-				catch: (cause) => cause
-			}),
-		clearResources: () =>
-			Effect.tryPromise({
-				try: () => clearResourcesPromise(),
 				catch: (cause) => cause
 			}),
 		reload: () =>
