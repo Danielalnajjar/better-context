@@ -4,8 +4,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadNpmResource } from './npm.ts';
+import { loadNpmResource, type NpmResourceDeps } from './npm.ts';
 import type { BtcaNpmResourceArgs } from '../types.ts';
+import { createVirtualFs, disposeVirtualFs } from '../../vfs/virtual-fs.ts';
 
 const streamFromString = (value: string) =>
 	new ReadableStream<Uint8Array>({
@@ -56,25 +57,40 @@ const createInstallSpawnMock = (args?: { exitCode?: number; stdout?: string; std
 		} as unknown as ReturnType<typeof Bun.spawn>;
 	}) as typeof Bun.spawn;
 
+const createNpmTestDeps = (spawn: NpmResourceDeps['spawn']): Partial<NpmResourceDeps> => ({
+	spawn
+});
+
+const materializeResource = async (
+	resource: Awaited<ReturnType<typeof loadNpmResource>>,
+	destinationPath = '/resource'
+) => {
+	const vfsId = createVirtualFs();
+	try {
+		const result = await resource.materializeIntoVirtualFs({ destinationPath, vfsId });
+		return { result, vfsId };
+	} catch (cause) {
+		disposeVirtualFs(vfsId);
+		throw cause;
+	}
+};
+
 describe('NPM Resource', () => {
 	let testDir: string;
 	let originalFetch: typeof fetch;
-	let originalSpawn: typeof Bun.spawn;
 
 	beforeEach(async () => {
 		testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-npm-test-'));
 		originalFetch = globalThis.fetch;
-		originalSpawn = Bun.spawn;
 	});
 
 	afterEach(async () => {
 		globalThis.fetch = originalFetch;
-		Bun.spawn = originalSpawn;
 		await fs.rm(testDir, { recursive: true, force: true });
 	});
 
 	it('hydrates an npm package into a filesystem resource', async () => {
-		Bun.spawn = createInstallSpawnMock();
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			if (url.startsWith('https://registry.npmjs.org/react')) {
@@ -104,34 +120,40 @@ describe('NPM Resource', () => {
 			name: 'react-docs',
 			package: 'react',
 			resourcesDirectoryPath: testDir,
-			specialAgentInstructions: 'Use this for React questions'
+			specialAgentInstructions: 'Use this for React questions',
+			quiet: true
 		};
 
-		const resource = await loadNpmResource(args);
+		const resource = await loadNpmResource(args, npmDeps);
 		expect(resource._tag).toBe('fs-based');
 		expect(resource.type).toBe('npm');
 		expect(resource.repoSubPaths).toEqual([]);
 
-		const resourcePath = await resource.getAbsoluteDirectoryPath();
-		expect(resourcePath).toBe(path.join(testDir, 'react-docs'));
+		const { result, vfsId } = await materializeResource(resource, '/react-docs');
+		const resourcePath = path.join(testDir, 'react-docs');
+		expect(result.metadata.package).toBe('react');
 
-		const readme = await Bun.file(path.join(resourcePath, 'README.md')).text();
-		expect(readme).toContain('# React');
-		const runtimeFile = await Bun.file(path.join(resourcePath, 'src', 'runtime.js')).text();
-		expect(runtimeFile).toContain(`'$state'`);
+		try {
+			const readme = await Bun.file(path.join(resourcePath, 'README.md')).text();
+			expect(readme).toContain('# React');
+			const runtimeFile = await Bun.file(path.join(resourcePath, 'src', 'runtime.js')).text();
+			expect(runtimeFile).toContain(`'$state'`);
 
-		const packagePage = await Bun.file(path.join(resourcePath, 'npm-package-page.html')).text();
-		expect(packagePage).toContain('<title>react</title>');
+			const packagePage = await Bun.file(path.join(resourcePath, 'npm-package-page.html')).text();
+			expect(packagePage).toContain('<title>react</title>');
+		} finally {
+			disposeVirtualFs(vfsId);
+		}
 	});
 
 	it('reuses cached pinned versions without refetching', async () => {
 		let fetchCalls = 0;
 		let spawnCalls = 0;
 		const installSpawnMock = createInstallSpawnMock();
-		Bun.spawn = ((...spawnArgs: Parameters<typeof Bun.spawn>) => {
+		const npmDeps = createNpmTestDeps(((...spawnArgs: Parameters<typeof Bun.spawn>) => {
 			spawnCalls += 1;
 			return installSpawnMock(...spawnArgs);
-		}) as typeof Bun.spawn;
+		}) as typeof Bun.spawn);
 		globalThis.fetch = (async (input) => {
 			fetchCalls += 1;
 			const url = String(input);
@@ -162,19 +184,24 @@ describe('NPM Resource', () => {
 			package: '@types/node',
 			version: '22.10.1',
 			resourcesDirectoryPath: testDir,
-			specialAgentInstructions: ''
+			specialAgentInstructions: '',
+			quiet: true
 		};
 
-		await loadNpmResource(args);
+		const first = await loadNpmResource(args, npmDeps);
+		const firstMaterialized = await materializeResource(first, '/node-types-a');
+		disposeVirtualFs(firstMaterialized.vfsId);
 		const firstFetchCalls = fetchCalls;
 		const firstSpawnCalls = spawnCalls;
-		await loadNpmResource(args);
+		const second = await loadNpmResource(args, npmDeps);
+		const secondMaterialized = await materializeResource(second, '/node-types-b');
+		disposeVirtualFs(secondMaterialized.vfsId);
 		expect(fetchCalls).toBe(firstFetchCalls);
 		expect(spawnCalls).toBe(firstSpawnCalls);
 	});
 
 	it('adds cleanup for anonymous npm resources', async () => {
-		Bun.spawn = createInstallSpawnMock();
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			if (url.startsWith('https://registry.npmjs.org/react')) {
@@ -200,14 +227,17 @@ describe('NPM Resource', () => {
 			package: 'react',
 			resourcesDirectoryPath: testDir,
 			specialAgentInstructions: '',
+			quiet: true,
 			ephemeral: true,
 			localDirectoryKey: 'anonymous-react'
 		};
 
-		const resource = await loadNpmResource(args);
+		const resource = await loadNpmResource(args, npmDeps);
 		expect(resource.cleanup).toBeDefined();
 
-		const resourcePath = await resource.getAbsoluteDirectoryPath();
+		const materialized = await materializeResource(resource, '/anonymous-react');
+		disposeVirtualFs(materialized.vfsId);
+		const resourcePath = path.join(testDir, '.tmp', 'anonymous-react');
 		let existsBefore = false;
 		try {
 			await fs.stat(resourcePath);
@@ -229,7 +259,7 @@ describe('NPM Resource', () => {
 	});
 
 	it('uses readable fsName aliases for anonymous npm resources', async () => {
-		Bun.spawn = createInstallSpawnMock();
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			if (url.startsWith('https://registry.npmjs.org/%40types%2Fnode')) {
@@ -256,18 +286,48 @@ describe('NPM Resource', () => {
 			version: '22.10.1',
 			resourcesDirectoryPath: testDir,
 			specialAgentInstructions: '',
+			quiet: true,
 			ephemeral: true,
 			localDirectoryKey: 'anonymous-types-node'
 		};
 
-		const resource = await loadNpmResource(args);
-		expect(resource.fsName).toBe('npm:@types__node@22.10.1');
+		const resource = await loadNpmResource(args, npmDeps);
+		expect(resource.fsName).toBe('npm:@types__node@22.10.1--anonymous-types-node');
 		expect(resource.fsName.includes('%3A')).toBe(false);
 		expect(resource.fsName.includes('%2F')).toBe(false);
 	});
 
+	it('keeps anonymous npm fsName values collision-free for distinct packages with similar sanitized names', async () => {
+		const first = await loadNpmResource({
+			type: 'npm',
+			name: 'anonymous:npm:@foo/bar__baz@1.0.0',
+			package: '@foo/bar__baz',
+			version: '1.0.0',
+			resourcesDirectoryPath: testDir,
+			specialAgentInstructions: '',
+			quiet: true,
+			ephemeral: true,
+			localDirectoryKey: 'anonymous-first'
+		});
+		const second = await loadNpmResource({
+			type: 'npm',
+			name: 'anonymous:npm:@foo__bar/baz@1.0.0',
+			package: '@foo__bar/baz',
+			version: '1.0.0',
+			resourcesDirectoryPath: testDir,
+			specialAgentInstructions: '',
+			quiet: true,
+			ephemeral: true,
+			localDirectoryKey: 'anonymous-second'
+		});
+
+		expect(first.fsName).not.toBe(second.fsName);
+		expect(first.fsName).toContain('anonymous-first');
+		expect(second.fsName).toContain('anonymous-second');
+	});
+
 	it('continues when npm package page fetch is unavailable', async () => {
-		Bun.spawn = createInstallSpawnMock();
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			if (url.startsWith('https://registry.npmjs.org/react')) {
@@ -296,20 +356,28 @@ describe('NPM Resource', () => {
 			name: 'react-docs',
 			package: 'react',
 			resourcesDirectoryPath: testDir,
-			specialAgentInstructions: ''
+			specialAgentInstructions: '',
+			quiet: true
 		};
 
-		const resource = await loadNpmResource(args);
-		const resourcePath = await resource.getAbsoluteDirectoryPath();
-		const packagePage = await Bun.file(path.join(resourcePath, 'npm-package-page.html')).text();
-		expect(packagePage).toContain('npm package page unavailable');
+		const resource = await loadNpmResource(args, npmDeps);
+		const { vfsId } = await materializeResource(resource, '/react-docs-fallback');
+		try {
+			const resourcePath = path.join(testDir, 'react-docs');
+			const packagePage = await Bun.file(path.join(resourcePath, 'npm-package-page.html')).text();
+			expect(packagePage).toContain('npm package page unavailable');
+		} finally {
+			disposeVirtualFs(vfsId);
+		}
 	});
 
 	it('returns a clear install error when bun install fails', async () => {
-		Bun.spawn = createInstallSpawnMock({
-			exitCode: 1,
-			stderr: 'error: package not found'
-		});
+		const npmDeps = createNpmTestDeps(
+			createInstallSpawnMock({
+				exitCode: 1,
+				stderr: 'error: package not found'
+			})
+		);
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			if (url.startsWith('https://registry.npmjs.org/react')) {
@@ -338,10 +406,12 @@ describe('NPM Resource', () => {
 			name: 'react-docs',
 			package: 'react',
 			resourcesDirectoryPath: testDir,
-			specialAgentInstructions: ''
+			specialAgentInstructions: '',
+			quiet: true
 		};
 
-		await expect(loadNpmResource(args)).rejects.toThrow(
+		const resource = await loadNpmResource(args, npmDeps);
+		await expect(materializeResource(resource, '/react-docs-error')).rejects.toThrow(
 			'Failed to install npm package "react@19.0.0"'
 		);
 	});

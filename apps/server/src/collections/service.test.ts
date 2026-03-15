@@ -3,39 +3,65 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { ConfigService } from '../config/index.ts';
-import type { ResourceDefinition } from '../resources/schema.ts';
 import type { ResourcesService } from '../resources/service.ts';
-import type { BtcaFsResource } from '../resources/types.ts';
+import type {
+	BtcaFsResource,
+	BtcaGitMaterializationMetadata,
+	BtcaLocalMaterializationMetadata,
+	BtcaNpmMaterializationMetadata
+} from '../resources/types.ts';
+import { ResourceError } from '../resources/helpers.ts';
 import { createCollectionsService } from './service.ts';
-import { disposeVirtualFs, existsInVirtualFs } from '../vfs/virtual-fs.ts';
+import { CollectionError } from './types.ts';
+import { loadLocalResource } from '../resources/impls/local.ts';
+import { shouldIgnoreCommonImportedPath } from '../resources/helpers.ts';
+import {
+	disposeVirtualFs,
+	existsInVirtualFs,
+	importDirectoryIntoVirtualFs
+} from '../vfs/virtual-fs.ts';
 
 const createFsResource = ({
 	name,
 	resourcePath,
 	type = 'local',
 	repoSubPaths = [],
-	specialAgentInstructions = ''
+	specialAgentInstructions = '',
+	metadata = {}
 }: {
 	name: string;
 	resourcePath: string;
 	type?: BtcaFsResource['type'];
 	repoSubPaths?: readonly string[];
 	specialAgentInstructions?: string;
-}) => ({
-	_tag: 'fs-based' as const,
-	name,
-	fsName: name,
-	type,
-	repoSubPaths,
-	specialAgentInstructions,
-	getAbsoluteDirectoryPath: async () => resourcePath
-});
-
-const createConfigMock = (definitions: Record<string, ResourceDefinition> = {}) =>
+	metadata?:
+		| BtcaGitMaterializationMetadata
+		| BtcaLocalMaterializationMetadata
+		| BtcaNpmMaterializationMetadata;
+}) =>
 	({
-		getResource: (name: string) => definitions[name]
-	}) as unknown as ConfigService;
+		_tag: 'fs-based' as const,
+		name,
+		fsName: name,
+		type,
+		repoSubPaths,
+		specialAgentInstructions,
+		materializeIntoVirtualFs: async ({
+			destinationPath,
+			vfsId
+		}: {
+			destinationPath: string;
+			vfsId: string;
+		}) => {
+			await importDirectoryIntoVirtualFs({
+				sourcePath: resourcePath,
+				destinationPath,
+				vfsId,
+				ignore: shouldIgnoreCommonImportedPath
+			});
+			return { metadata };
+		}
+	}) as BtcaFsResource;
 
 const createResourcesMock = (loadPromise: ResourcesService['loadPromise']) =>
 	({
@@ -68,8 +94,14 @@ describe('createCollectionsService', () => {
 	it('imports git-backed local resources from tracked and unignored files only', async () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-git-'));
 		const collections = createCollectionsService({
-			config: createConfigMock(),
-			resources: createResourcesMock(async () => createFsResource({ name: 'repo', resourcePath }))
+			resources: createResourcesMock(async () =>
+				loadLocalResource({
+					type: 'local',
+					name: 'repo',
+					path: resourcePath,
+					specialAgentInstructions: ''
+				})
+			)
 		});
 
 		try {
@@ -102,8 +134,14 @@ describe('createCollectionsService', () => {
 	it('falls back to directory import and still skips heavy local build directories', async () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-local-'));
 		const collections = createCollectionsService({
-			config: createConfigMock(),
-			resources: createResourcesMock(async () => createFsResource({ name: 'repo', resourcePath }))
+			resources: createResourcesMock(async () =>
+				loadLocalResource({
+					type: 'local',
+					name: 'repo',
+					path: resourcePath,
+					specialAgentInstructions: ''
+				})
+			)
 		});
 
 		try {
@@ -135,23 +173,18 @@ describe('createCollectionsService', () => {
 	it('includes git citation metadata in agent instructions', async () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-git-meta-'));
 		const collections = createCollectionsService({
-			config: createConfigMock({
-				docs: {
-					type: 'git',
-					name: 'docs',
-					url: 'https://github.com/example/repo.git',
-					branch: 'main',
-					searchPath: 'guides',
-					specialNotes: 'Prefer the guides folder.'
-				}
-			}),
 			resources: createResourcesMock(async () =>
 				createFsResource({
 					name: 'docs',
 					resourcePath,
 					type: 'git',
 					repoSubPaths: ['guides'],
-					specialAgentInstructions: 'Prefer the guides folder.'
+					specialAgentInstructions: 'Prefer the guides folder.',
+					metadata: {
+						url: 'https://github.com/example/repo.git',
+						branch: 'main',
+						commit: 'abc123'
+					}
 				})
 			)
 		});
@@ -178,9 +211,47 @@ describe('createCollectionsService', () => {
 					'<citation_rule>Convert virtual paths under ./docs/ to repo-relative paths, then encode each path segment for GitHub URLs.</citation_rule>'
 				);
 				expect(collection.agentInstructions).toContain('<path>./docs/guides</path>');
-				expect(collection.agentInstructions).toContain('<repo_commit>');
+				expect(collection.agentInstructions).toContain('<repo_commit>abc123</repo_commit>');
 				expect(collection.agentInstructions).toContain(
 					'<special_notes>Prefer the guides folder.</special_notes>'
+				);
+			} finally {
+				await cleanupCollection(collection);
+			}
+		} finally {
+			await fs.rm(resourcePath, { recursive: true, force: true });
+		}
+	});
+
+	it('uses the resolved anonymous git fallback branch in agent instructions', async () => {
+		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-git-fallback-'));
+		const collections = createCollectionsService({
+			resources: createResourcesMock(async () =>
+				createFsResource({
+					name: 'anonymous:https://github.com/example/repo.git',
+					resourcePath,
+					type: 'git',
+					repoSubPaths: [],
+					metadata: {
+						url: 'https://github.com/example/repo.git',
+						branch: 'trunk',
+						commit: 'deadbeef'
+					}
+				})
+			)
+		});
+
+		try {
+			await fs.writeFile(path.join(resourcePath, 'README.md'), 'fallback branch docs\n');
+
+			const collection = await collections.loadPromise({
+				resourceNames: ['anonymous:https://github.com/example/repo.git']
+			});
+
+			try {
+				expect(collection.agentInstructions).toContain('<repo_branch>trunk</repo_branch>');
+				expect(collection.agentInstructions).toContain(
+					'<github_blob_prefix>https://github.com/example/repo/blob/trunk</github_blob_prefix>'
 				);
 			} finally {
 				await cleanupCollection(collection);
@@ -193,34 +264,22 @@ describe('createCollectionsService', () => {
 	it('includes npm citation metadata in agent instructions', async () => {
 		const resourcePath = await fs.mkdtemp(path.join(os.tmpdir(), 'btca-collections-npm-meta-'));
 		const collections = createCollectionsService({
-			config: createConfigMock({
-				react: {
-					type: 'npm',
-					name: 'react',
-					package: 'react',
-					version: '19.0.0',
-					specialNotes: 'Use package docs.'
-				}
-			}),
 			resources: createResourcesMock(async () =>
 				createFsResource({
 					name: 'react',
 					resourcePath,
 					type: 'npm',
-					specialAgentInstructions: 'Use package docs.'
+					specialAgentInstructions: 'Use package docs.',
+					metadata: {
+						package: 'react',
+						version: '19.0.0',
+						url: 'https://www.npmjs.com/package/react'
+					}
 				})
 			)
 		});
 
 		try {
-			await fs.writeFile(
-				path.join(resourcePath, '.btca-npm-meta.json'),
-				JSON.stringify({
-					packageName: 'react',
-					resolvedVersion: '19.0.0',
-					packageUrl: 'https://www.npmjs.com/package/react'
-				})
-			);
 			await fs.writeFile(path.join(resourcePath, 'README.md'), 'react docs\n');
 
 			const collection = await collections.loadPromise({ resourceNames: ['react'] });
@@ -252,5 +311,48 @@ describe('createCollectionsService', () => {
 		} finally {
 			await fs.rm(resourcePath, { recursive: true, force: true });
 		}
+	});
+
+	it('preserves per-resource materialization errors and hints', async () => {
+		const collections = createCollectionsService({
+			resources: createResourcesMock(async (name) => {
+				if (name !== 'broken-docs') {
+					throw new Error(`unexpected resource ${name}`);
+				}
+
+				return {
+					_tag: 'fs-based',
+					name: 'broken-docs',
+					fsName: 'broken-docs',
+					type: 'git',
+					repoSubPaths: [],
+					specialAgentInstructions: '',
+					materializeIntoVirtualFs: async () => {
+						throw new ResourceError({
+							message: 'Branch "missing" not found in the repository',
+							hint: 'Verify the branch name exists in the repository. Common branches are "main", "master", "trunk", or "dev".',
+							cause: new Error('remote ref missing')
+						});
+					}
+				} satisfies BtcaFsResource;
+			})
+		});
+
+		let caught: unknown;
+		try {
+			await collections.loadPromise({ resourceNames: ['broken-docs'] });
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(CollectionError);
+		expect((caught as CollectionError).message).toBe(
+			'Failed to materialize resource "broken-docs"'
+		);
+		expect((caught as CollectionError).code).toBe('RESOURCE_MATERIALIZE_FAILED');
+		expect((caught as CollectionError).resourceName).toBe('broken-docs');
+		expect((caught as CollectionError).hint).toBe(
+			'Verify the branch name exists in the repository. Common branches are "main", "master", "trunk", or "dev".'
+		);
 	});
 });
