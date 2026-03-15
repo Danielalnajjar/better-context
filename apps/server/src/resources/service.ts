@@ -74,7 +74,7 @@ export type ResourcesService = {
 			quiet?: boolean;
 		}
 	) => Promise<BtcaFsResource>;
-	clearCaches: () => Effect.Effect<{ cleared: number }, unknown, never>;
+	clearCaches: () => Effect.Effect<{ cleared: number }, ResourceError, never>;
 	clearCachesPromise: () => Promise<{ cleared: number }>;
 };
 
@@ -490,6 +490,15 @@ export const createResourcesService = (
 	config: ConfigServiceShape,
 	deps?: ResourcesServiceDeps
 ): ResourcesService => {
+	const normalizeClearError = (cause: unknown) =>
+		cause instanceof ResourceError
+			? cause
+			: new ResourceError({
+					message: 'Failed to clear BTCA-managed resource caches',
+					hint: 'Check filesystem permissions for the BTCA data directory and try again.',
+					cause
+				});
+
 	const loadPromise: ResourcesService['loadPromise'] = async (name, options) => {
 		const quiet = options?.quiet ?? false;
 		const definition = resolveResourceDefinition(name, config.getResource);
@@ -531,60 +540,67 @@ export const createResourcesService = (
 
 	const clearCachesPromise: ResourcesService['clearCachesPromise'] = async () => {
 		const lockPath = getClearLockPath(config.resourcesDirectory);
-		return withFilesystemLock(
-			{
-				lockPath,
-				label: 'resources.clear',
-				quiet: true
-			},
-			async () => {
-				let clearedCount = 0;
-				const handledPaths = new Set<string>();
-				const currentNamedGitKeys = getCurrentNamedGitKeys(config.resources);
-				const currentNamedNpmKeys = getCurrentNamedNpmKeys(config.resources);
-				const { extraGitKeys, extraNpmKeys } = await getExtraActiveLockKeys(
-					config.resourcesDirectory,
-					{
-						currentNamedGitKeys,
-						currentNamedNpmKeys
+		try {
+			return await withFilesystemLock(
+				{
+					lockPath,
+					label: 'resources.clear',
+					quiet: true
+				},
+				async () => {
+					let clearedCount = 0;
+					const handledPaths = new Set<string>();
+					const currentNamedGitKeys = getCurrentNamedGitKeys(config.resources);
+					const currentNamedNpmKeys = getCurrentNamedNpmKeys(config.resources);
+					const { extraGitKeys, extraNpmKeys } = await getExtraActiveLockKeys(
+						config.resourcesDirectory,
+						{
+							currentNamedGitKeys,
+							currentNamedNpmKeys
+						}
+					);
+
+					for (const key of currentNamedGitKeys) {
+						recordHandled(handledPaths, `mirror:${key}`);
+						clearedCount += await drainGitMirrorKey(config.resourcesDirectory, key);
 					}
-				);
 
-				for (const key of currentNamedGitKeys) {
-					recordHandled(handledPaths, `mirror:${key}`);
-					clearedCount += await drainGitMirrorKey(config.resourcesDirectory, key);
+					for (const key of currentNamedNpmKeys) {
+						recordHandled(handledPaths, `top:${key}`);
+						clearedCount += await drainNpmCacheKey(config.resourcesDirectory, key, {
+							includeTopLevel: true
+						});
+					}
+
+					for (const key of extraGitKeys) {
+						recordHandled(handledPaths, `mirror:${key}`);
+						clearedCount += await drainGitMirrorKey(config.resourcesDirectory, key);
+					}
+
+					for (const key of extraNpmKeys) {
+						recordHandled(handledPaths, `top:${key}`, `tmp:${key}`);
+						clearedCount += await drainNpmCacheKey(config.resourcesDirectory, key, {
+							includeTopLevel: true,
+							includeTmp: true
+						});
+					}
+
+					clearedCount += await sweepRemainingGitMirrors(config.resourcesDirectory, handledPaths);
+					clearedCount += await sweepRemainingTopLevelCaches(
+						config.resourcesDirectory,
+						handledPaths
+					);
+					clearedCount += await sweepRemainingTmpCaches(config.resourcesDirectory, handledPaths);
+					await sweepClearTrashRoot(config.resourcesDirectory);
+
+					await mkdir(getResourceLocksRoot(config.resourcesDirectory), { recursive: true });
+
+					return { cleared: clearedCount };
 				}
-
-				for (const key of currentNamedNpmKeys) {
-					recordHandled(handledPaths, `top:${key}`);
-					clearedCount += await drainNpmCacheKey(config.resourcesDirectory, key, {
-						includeTopLevel: true
-					});
-				}
-
-				for (const key of extraGitKeys) {
-					recordHandled(handledPaths, `mirror:${key}`);
-					clearedCount += await drainGitMirrorKey(config.resourcesDirectory, key);
-				}
-
-				for (const key of extraNpmKeys) {
-					recordHandled(handledPaths, `top:${key}`, `tmp:${key}`);
-					clearedCount += await drainNpmCacheKey(config.resourcesDirectory, key, {
-						includeTopLevel: true,
-						includeTmp: true
-					});
-				}
-
-				clearedCount += await sweepRemainingGitMirrors(config.resourcesDirectory, handledPaths);
-				clearedCount += await sweepRemainingTopLevelCaches(config.resourcesDirectory, handledPaths);
-				clearedCount += await sweepRemainingTmpCaches(config.resourcesDirectory, handledPaths);
-				await sweepClearTrashRoot(config.resourcesDirectory);
-
-				await mkdir(getResourceLocksRoot(config.resourcesDirectory), { recursive: true });
-
-				return { cleared: clearedCount };
-			}
-		);
+			);
+		} catch (cause) {
+			throw normalizeClearError(cause);
+		}
 	};
 
 	const load: ResourcesService['load'] = (name, options) =>
@@ -606,7 +622,7 @@ export const createResourcesService = (
 		clearCaches: () =>
 			Effect.tryPromise({
 				try: () => clearCachesPromise(),
-				catch: (cause) => cause
+				catch: normalizeClearError
 			}),
 		clearCachesPromise
 	};

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -312,6 +313,19 @@ const readCacheMeta = async (localPath: string): Promise<NpmCacheMeta | null> =>
 	}
 };
 
+const writeCacheMetaAtomically = async (localPath: string, meta: NpmCacheMeta) => {
+	const targetPath = path.join(localPath, NPM_CACHE_META_FILE);
+	const tempPath = `${targetPath}.${randomUUID()}.tmp`;
+
+	try {
+		await Bun.write(tempPath, JSON.stringify(meta, null, 2));
+		await fs.rename(tempPath, targetPath);
+	} catch (cause) {
+		await fs.rm(tempPath, { force: true }).catch(() => undefined);
+		throw cause;
+	}
+};
+
 const shouldReuseCache = async (config: ResolvedNpmResourceArgs): Promise<boolean> => {
 	const localPath = config.localPath;
 	if (!config.requestedVersion || config.ephemeral) return false;
@@ -429,9 +443,9 @@ const writeNpmMetadataFiles = async (args: {
 
 	await Promise.all([
 		Bun.write(path.join(args.localPath, NPM_CONTENT_FILE), overview),
-		Bun.write(path.join(args.localPath, NPM_PAGE_FILE), args.pageHtml),
-		Bun.write(path.join(args.localPath, NPM_CACHE_META_FILE), JSON.stringify(meta, null, 2))
+		Bun.write(path.join(args.localPath, NPM_PAGE_FILE), args.pageHtml)
 	]);
+	await writeCacheMetaAtomically(args.localPath, meta);
 };
 
 const hydrateNpmResource = async (config: ResolvedNpmResourceArgs, deps: NpmResourceDeps) => {
@@ -570,7 +584,7 @@ export const loadNpmResource = async (
 					return {
 						metadata: {
 							package: resolved.package,
-							version: resolved.requestedVersion ?? cached?.resolvedVersion,
+							version: cached?.resolvedVersion ?? resolved.requestedVersion,
 							url: cached?.packageUrl
 						}
 					};

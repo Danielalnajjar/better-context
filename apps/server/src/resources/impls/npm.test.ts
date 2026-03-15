@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest } from 'bun:test';
 import { promises as fs } from 'node:fs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -141,6 +141,59 @@ describe('NPM Resource', () => {
 
 			const packagePage = await Bun.file(path.join(resourcePath, 'npm-package-page.html')).text();
 			expect(packagePage).toContain('<title>react</title>');
+		} finally {
+			disposeVirtualFs(vfsId);
+		}
+	});
+
+	it('uses the resolved installed version for tag-based npm metadata', async () => {
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
+		globalThis.fetch = (async (input) => {
+			const url = String(input);
+			if (url.startsWith('https://registry.npmjs.org/react')) {
+				return new Response(
+					JSON.stringify({
+						'dist-tags': { latest: '19.1.0' },
+						versions: {
+							'19.1.0': {
+								name: 'react',
+								version: '19.1.0',
+								description: 'React',
+								readme: '# React\n\nDocs'
+							}
+						}
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+			if (url.startsWith('https://www.npmjs.com/package/react/v/19.1.0')) {
+				return new Response('<html><title>react</title></html>', { status: 200 });
+			}
+			return new Response('not found', { status: 404 });
+		}) as typeof fetch;
+
+		const resource = await loadNpmResource(
+			{
+				type: 'npm',
+				name: 'react-latest',
+				package: 'react',
+				version: 'latest',
+				resourcesDirectoryPath: testDir,
+				specialAgentInstructions: '',
+				quiet: true
+			},
+			npmDeps
+		);
+
+		const { result, vfsId } = await materializeResource(resource, '/react-latest');
+		try {
+			expect(result.metadata.version).toBe('19.1.0');
+
+			const meta = JSON.parse(
+				await Bun.file(path.join(testDir, 'react-latest', '.btca-npm-meta.json')).text()
+			) as { requestedVersion?: string; resolvedVersion: string };
+			expect(meta.requestedVersion).toBe('latest');
+			expect(meta.resolvedVersion).toBe('19.1.0');
 		} finally {
 			disposeVirtualFs(vfsId);
 		}
@@ -413,6 +466,73 @@ describe('NPM Resource', () => {
 		const resource = await loadNpmResource(args, npmDeps);
 		await expect(materializeResource(resource, '/react-docs-error')).rejects.toThrow(
 			'Failed to install npm package "react@19.0.0"'
+		);
+	});
+
+	it('does not publish cache metadata when payload writes fail', async () => {
+		const npmDeps = createNpmTestDeps(createInstallSpawnMock());
+		globalThis.fetch = (async (input) => {
+			const url = String(input);
+			if (url.startsWith('https://registry.npmjs.org/react')) {
+				return new Response(
+					JSON.stringify({
+						'dist-tags': { latest: '19.0.0' },
+						versions: {
+							'19.0.0': {
+								name: 'react',
+								version: '19.0.0',
+								description: 'React',
+								readme: '# React\n\nDocs'
+							}
+						}
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+			if (url.startsWith('https://www.npmjs.com/package/react/v/19.0.0')) {
+				return new Response('<html><title>react</title></html>', { status: 200 });
+			}
+			return new Response('not found', { status: 404 });
+		}) as typeof fetch;
+
+		const originalWrite = Bun.write.bind(Bun);
+		const writeSpy = jest.spyOn(Bun, 'write').mockImplementation(async (...writeArgs) => {
+			const target = writeArgs[0];
+			if (
+				typeof target === 'string' &&
+				target.endsWith(path.join('react-docs', 'npm-package-page.html'))
+			) {
+				throw new Error('page write failed');
+			}
+			return originalWrite(
+				writeArgs[0] as Parameters<typeof Bun.write>[0],
+				writeArgs[1] as Parameters<typeof Bun.write>[1],
+				writeArgs[2] as Parameters<typeof Bun.write>[2]
+			);
+		});
+
+		try {
+			const resource = await loadNpmResource(
+				{
+					type: 'npm',
+					name: 'react-docs',
+					package: 'react',
+					resourcesDirectoryPath: testDir,
+					specialAgentInstructions: '',
+					quiet: true
+				},
+				npmDeps
+			);
+
+			await expect(materializeResource(resource, '/react-docs-error')).rejects.toThrow(
+				'page write failed'
+			);
+		} finally {
+			writeSpy.mockRestore();
+		}
+
+		expect(await Bun.file(path.join(testDir, 'react-docs', '.btca-npm-meta.json')).exists()).toBe(
+			false
 		);
 	});
 });

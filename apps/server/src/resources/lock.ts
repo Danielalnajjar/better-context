@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { setInterval as heartbeatTicks, setTimeout as sleep } from 'node:timers/promises';
 
 export type FilesystemLockArgs = {
 	readonly lockPath: string;
@@ -432,6 +432,36 @@ const releaseOwnedLock = async (lockPath: string, owner: FilesystemLockOwner) =>
 	await fs.rm(lockPath, { recursive: true, force: true });
 };
 
+const startHeartbeatLoop = (lockPath: string, heartbeatMs: number) => {
+	const controller = new AbortController();
+	const completed = (async () => {
+		try {
+			for await (const _ of heartbeatTicks(heartbeatMs, undefined, {
+				signal: controller.signal
+			})) {
+				try {
+					await touchHeartbeat(lockPath);
+				} catch {}
+			}
+		} catch (cause) {
+			const name =
+				typeof cause === 'object' && cause && 'name' in cause
+					? String((cause as { name?: unknown }).name)
+					: '';
+			if (name !== 'AbortError') {
+				return;
+			}
+		}
+	})();
+
+	return {
+		stop: async () => {
+			controller.abort();
+			await completed;
+		}
+	};
+};
+
 export const withFilesystemLock = async <T>(
 	args: FilesystemLockArgs,
 	use: () => Promise<T>
@@ -460,17 +490,20 @@ export const withFilesystemLock = async <T>(
 			label: resolved.label,
 			startedAt: new Date().toISOString()
 		};
-		await Bun.write(getOwnerPath(resolved.lockPath), JSON.stringify(owner, null, 2));
-		await touchHeartbeat(resolved.lockPath);
+		try {
+			await Bun.write(getOwnerPath(resolved.lockPath), JSON.stringify(owner, null, 2));
+			await touchHeartbeat(resolved.lockPath);
+		} catch (cause) {
+			await fs.rm(resolved.lockPath, { recursive: true, force: true }).catch(() => undefined);
+			throw cause;
+		}
 
-		const interval = setInterval(() => {
-			void touchHeartbeat(resolved.lockPath);
-		}, resolved.heartbeatMs);
+		const heartbeatLoop = startHeartbeatLoop(resolved.lockPath, resolved.heartbeatMs);
 
 		try {
 			return await use();
 		} finally {
-			clearInterval(interval);
+			await heartbeatLoop.stop();
 			await releaseOwnedLock(resolved.lockPath, owner);
 		}
 	}

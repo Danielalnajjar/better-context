@@ -51,7 +51,7 @@ It ships:
   - Remove a resource from config (with confirmation).
 
 - `btca clear`
-  - Clear all locally cloned resources.
+  - Clear BTCA-managed local resource caches, including named git mirrors, temporary anonymous git caches, and npm caches.
 - `btca serve --port <port>`
   - Start the local server.
 

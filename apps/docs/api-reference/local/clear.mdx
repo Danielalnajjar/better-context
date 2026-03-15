@@ -3,6 +3,6 @@ title: 'Clear cached BTCA resource data'
 openapi: 'POST /clear'
 ---
 
-Clears cache-backed BTCA resource data, including git mirrors, npm caches, temporary anonymous npm caches, and leftover legacy cache directories.
+Clears cache-backed BTCA resource data, including git mirrors, temporary anonymous git caches, npm caches, temporary anonymous npm caches, and leftover legacy cache directories.
 
 This operation is lock-aware: it waits for active clear/resource locks and can reclaim stale locks before removing cached data.

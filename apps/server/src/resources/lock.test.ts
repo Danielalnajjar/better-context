@@ -166,7 +166,7 @@ describe('resource lock helper', () => {
 		expect(staleAcquired).toBe(true);
 	});
 
-	it('reclaims a stale owner-without-heartbeat lock even if the pid is currently live', async () => {
+	it('reclaims a stale owner-without-heartbeat lock even if the owner pid is still live', async () => {
 		const lockPath = path.join(tempDir, 'stale-live-pid-pre-heartbeat.lock');
 		await fs.mkdir(lockPath, { recursive: true });
 		await writeOwner(lockPath, {
@@ -174,13 +174,15 @@ describe('resource lock helper', () => {
 			startedAt: new Date(Date.now() - 5_000).toISOString()
 		});
 
-		await waitForFilesystemLockToClear({
-			lockPath,
-			label: 'stale-live-pid-pre-heartbeat',
-			pollMs: 10,
-			heartbeatMs: 20,
-			staleMs: 100
-		});
+		await expect(
+			clearFilesystemLockIfAbsentOrStale({
+				lockPath,
+				label: 'stale-live-pid-pre-heartbeat',
+				pollMs: 10,
+				heartbeatMs: 20,
+				staleMs: 100
+			})
+		).resolves.toBe(true);
 
 		const exists = await fs
 			.stat(lockPath)
@@ -189,7 +191,7 @@ describe('resource lock helper', () => {
 		expect(exists).toBe(false);
 	});
 
-	it('reclaims a stale heartbeat lock even if the pid is currently live', async () => {
+	it('reclaims a stale heartbeat lock even if the owner pid is still live', async () => {
 		const lockPath = path.join(tempDir, 'stale-live-pid-heartbeat.lock');
 		await fs.mkdir(lockPath, { recursive: true });
 		await writeOwner(lockPath, {
@@ -202,19 +204,121 @@ describe('resource lock helper', () => {
 		await fs.utimes(heartbeatPath, oldDate, oldDate);
 		await fs.utimes(lockPath, oldDate, oldDate);
 
-		await waitForFilesystemLockToClear({
-			lockPath,
-			label: 'stale-live-pid-heartbeat',
-			pollMs: 10,
-			heartbeatMs: 20,
-			staleMs: 100
-		});
+		await expect(
+			clearFilesystemLockIfAbsentOrStale({
+				lockPath,
+				label: 'stale-live-pid-heartbeat',
+				pollMs: 10,
+				heartbeatMs: 20,
+				staleMs: 100
+			})
+		).resolves.toBe(true);
 
 		const exists = await fs
 			.stat(lockPath)
 			.then(() => true)
 			.catch(() => false);
 		expect(exists).toBe(false);
+	});
+
+	it('removes the lock directory if bootstrap fails after mkdir succeeds', async () => {
+		const lockPath = path.join(tempDir, 'bootstrap-failure.lock');
+		const originalWrite = Bun.write.bind(Bun);
+		const writeSpy = jest.spyOn(Bun, 'write').mockImplementation(async (...writeArgs) => {
+			const target = writeArgs[0];
+			if (
+				typeof target === 'string' &&
+				target.endsWith(path.join('bootstrap-failure.lock', 'owner.json'))
+			) {
+				throw new Error('owner write failed');
+			}
+			return originalWrite(
+				writeArgs[0] as Parameters<typeof Bun.write>[0],
+				writeArgs[1] as Parameters<typeof Bun.write>[1],
+				writeArgs[2] as Parameters<typeof Bun.write>[2]
+			);
+		});
+
+		try {
+			await expect(
+				withFilesystemLock(
+					{
+						lockPath,
+						label: 'bootstrap-failure',
+						pollMs: 10,
+						heartbeatMs: 20,
+						staleMs: 100
+					},
+					async () => undefined
+				)
+			).rejects.toThrow('owner write failed');
+		} finally {
+			writeSpy.mockRestore();
+		}
+
+		const exists = await fs
+			.stat(lockPath)
+			.then(() => true)
+			.catch(() => false);
+		expect(exists).toBe(false);
+	});
+
+	it('continues holding the lock when a heartbeat refresh fails in the background', async () => {
+		const lockPath = path.join(tempDir, 'heartbeat-refresh-failure.lock');
+		const originalUtimes = fs.utimes.bind(fs);
+		const originalWrite = Bun.write.bind(Bun);
+		let heartbeatUtimesCalls = 0;
+		let heartbeatWriteCalls = 0;
+		const utimesSpy = jest.spyOn(fs, 'utimes').mockImplementation(async (...utimesArgs) => {
+			const target = String(utimesArgs[0]);
+			if (target.endsWith(path.join('heartbeat-refresh-failure.lock', 'heartbeat'))) {
+				heartbeatUtimesCalls += 1;
+				if (heartbeatUtimesCalls >= 2) {
+					throw new Error('heartbeat utimes failed');
+				}
+			}
+			return originalUtimes(...utimesArgs);
+		});
+		const writeSpy = jest.spyOn(Bun, 'write').mockImplementation(async (...writeArgs) => {
+			const target = writeArgs[0];
+			if (
+				typeof target === 'string' &&
+				target.endsWith(path.join('heartbeat-refresh-failure.lock', 'heartbeat'))
+			) {
+				heartbeatWriteCalls += 1;
+				if (heartbeatWriteCalls >= 2) {
+					throw new Error('heartbeat write failed');
+				}
+			}
+			return originalWrite(
+				writeArgs[0] as Parameters<typeof Bun.write>[0],
+				writeArgs[1] as Parameters<typeof Bun.write>[1],
+				writeArgs[2] as Parameters<typeof Bun.write>[2]
+			);
+		});
+
+		let completed = false;
+		try {
+			await withFilesystemLock(
+				{
+					lockPath,
+					label: 'heartbeat-refresh-failure',
+					pollMs: 10,
+					heartbeatMs: 20,
+					staleMs: 100
+				},
+				async () => {
+					await sleep(80);
+					completed = true;
+				}
+			);
+		} finally {
+			utimesSpy.mockRestore();
+			writeSpy.mockRestore();
+		}
+
+		expect(completed).toBe(true);
+		expect(heartbeatWriteCalls).toBeGreaterThanOrEqual(2);
 	});
 
 	it('reclaims a stale lock with no usable metadata', async () => {
