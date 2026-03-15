@@ -313,7 +313,12 @@ Behavior:
 
 ### 4.11 `btca clear`
 
-Clears all locally cloned resources.
+Clears cache-backed BTCA resource data, not just git clones.
+
+Behavior:
+
+- Removes cached git mirrors, temporary anonymous git caches, npm cache directories, temporary anonymous npm caches, and leftover legacy cache directories
+- Uses the same lock-aware clearing flow as the local `/clear` endpoint so active resource work drains safely before cache data is removed
 
 ### 4.12 `btca serve`
 
@@ -534,13 +539,17 @@ Response:
 
 ### 6.11 `POST /clear`
 
-Clears all cached resource clones.
+Clears cache-backed BTCA resource data, including git mirrors, temporary anonymous git caches, npm caches, temporary anonymous npm caches, and leftover legacy cache directories.
+
+The operation is lock-aware: it waits for active clear/resource locks and can reclaim stale locks before removing cached data.
 
 Response:
 
 ```json
 { "cleared": 5 }
 ```
+
+`cleared` is the number of cache directories removed.
 
 ---
 

@@ -21,6 +21,14 @@ export {
 export {
 	FS_RESOURCE_SYSTEM_NOTE,
 	type BtcaFsResource,
+	type BtcaGitFsResource,
 	type BtcaGitResourceArgs,
+	type BtcaGitMaterializationMetadata,
+	type BtcaLocalFsResource,
+	type BtcaLocalMaterializationMetadata,
+	type BtcaNpmFsResource,
+	type BtcaNpmMaterializationMetadata,
+	type BtcaResourceMaterializationMetadata,
+	type BtcaResourceMaterializationResult,
 	type BtcaNpmResourceArgs
 } from './types.ts';

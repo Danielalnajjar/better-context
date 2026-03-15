@@ -146,7 +146,6 @@ describe('Agent', () => {
 						name: 'docs',
 						fsName: 'docs',
 						type: 'local',
-						path: '/docs',
 						repoSubPaths: [],
 						loadedAt: new Date().toISOString()
 					}
@@ -194,7 +193,6 @@ describe('Agent', () => {
 						name: 'docs',
 						fsName: 'docs',
 						type: 'local',
-						path: '/docs',
 						repoSubPaths: [],
 						loadedAt: new Date().toISOString()
 					}

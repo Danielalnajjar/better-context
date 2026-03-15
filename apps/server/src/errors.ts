@@ -16,7 +16,7 @@ const WRAPPER_TAGS = new Set(['Panic', 'UnhandledException']);
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null;
 
-const readStringField = (value: unknown, field: '_tag' | 'message' | 'hint') => {
+const readStringField = (value: unknown, field: string) => {
 	if (!isObjectRecord(value) || !(field in value)) return undefined;
 	const candidate = value[field];
 	return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
@@ -50,6 +50,17 @@ const isWrapperEntry = (entry: unknown) => {
 	return (
 		isAgentWrapper || (tag !== undefined && WRAPPER_TAGS.has(tag)) || isWrapperMessage(message)
 	);
+};
+
+const getCollectionDisplayMessage = (error: unknown) => {
+	if (!isObjectRecord(error)) return undefined;
+	if (readStringField(error, '_tag') !== 'CollectionError') return undefined;
+	const code = readStringField(error, 'code');
+	if (code !== 'RESOURCE_LOAD_FAILED' && code !== 'RESOURCE_MATERIALIZE_FAILED') return undefined;
+	const message = readStringField(error, 'message');
+	const cause = readCauseField(error);
+	if (!message || cause === undefined || cause === error) return message;
+	return `${message}: ${getErrorMessage(cause)}`;
 };
 
 const getErrorChain = (error: unknown) => {
@@ -87,6 +98,9 @@ export const getErrorTag = (error: unknown): string => {
 };
 
 export const getErrorMessage = (error: unknown): string => {
+	const contextualCollectionMessage = getCollectionDisplayMessage(error);
+	if (contextualCollectionMessage) return contextualCollectionMessage;
+
 	const chain = getErrorChain(error);
 
 	for (const entry of chain) {

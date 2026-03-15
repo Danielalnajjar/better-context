@@ -124,7 +124,7 @@ You can also pass raw HTTPS git URLs directly instead of a configured resource n
 
 - They are normalized (for example, GitHub `.../blob/main/...` URLs become the base repo URL).
 - They use a short-lived cache key derived from a hash of the URL.
-- They are cloned into a temporary folder under `.tmp` and removed after the request finishes.
+- They are cloned into a unique BTCA-managed temp directory under the configured data directory (for example `.tmp/btca-anon-git-*`) and removed after the request finishes.
 - Branch detection tries `main`, then `master`, then `trunk`, then `dev`.
 - If none of those branches exist, the request fails with an instruction to add the repo as a named resource instead.
 
@@ -224,7 +224,13 @@ Behavior: Creates `btca.config.jsonc` and prompts for storage mode (`local` `.bt
 
 ## `btca clear`
 
-Clears all locally cloned resources.
+Clears cache-backed BTCA resource data, not just git clones.
+
+Behavior:
+
+- Removes cached git mirrors, temporary anonymous git caches, npm cache directories, temporary anonymous npm caches, and leftover legacy cache directories.
+- Uses a lock-aware clear flow so active resource work drains before cached data is removed.
+- Reclaims stale cache locks when needed before removing cached data.
 
 ## `btca wipe`
 

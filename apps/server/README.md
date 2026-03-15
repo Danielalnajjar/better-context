@@ -94,7 +94,7 @@ Remove a resource by name.
 POST /clear
 ```
 
-Clear all locally cloned resources.
+Clear BTCA-managed local resource caches, including named git mirrors, temporary anonymous git caches, and npm caches.
 
 ### Questions
 
