@@ -277,7 +277,8 @@
 		},
 		"/clear": {
 			"post": {
-				"summary": "Clear cached resource clones",
+				"summary": "Clear cached BTCA resource data",
+				"description": "Clears cache-backed BTCA resource data, including git mirrors, npm caches, temporary anonymous npm caches, and leftover legacy cache directories. The operation is lock-aware and waits for active clear/resource locks, reclaiming stale locks when needed.",
 				"responses": {
 					"200": {
 						"description": "Clear result",
@@ -614,7 +615,8 @@
 				"required": ["cleared"],
 				"properties": {
 					"cleared": {
-						"type": "integer"
+						"type": "integer",
+						"description": "Number of cache directories removed."
 					}
 				}
 			}
